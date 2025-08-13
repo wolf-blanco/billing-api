@@ -1,0 +1,40 @@
+# cloudbuild.yaml
+substitutions:
+  _SERVICE: "billing-api"
+  _REGION: "europe-west1"
+  _REPO: "billing-repo"
+  _IMAGE: "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/billing-api"
+
+steps:
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - build
+      - "-t"
+      - "${_IMAGE}:${SHORT_SHA}"
+      - "-t"
+      - "${_IMAGE}:latest"
+      - "."
+
+images:
+  - "${_IMAGE}:${SHORT_SHA}"
+  - "${_IMAGE}:latest"
+
+# Despliega a Cloud Run usando la imagen en Artifact Registry
+  # (necesita roles: run.admin + iam.serviceAccountUser para el SA de Cloud Build)
+  # Ajusta --allow-unauthenticated según tu config
+  # Si usas IAM (recomendado), quita la bandera --allow-unauthenticated
+  # y conserva la autenticación que ya configuraste en el servicio.
+  # Si el servicio ya existe, esto actualizará la revisión.
+  # Si no existe, lo creará.
+  # Nota: Puedes quitar --allow-unauthenticated si tu servicio requiere IAM.
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - "${_SERVICE}"
+      - "--image=${_IMAGE}:${SHORT_SHA}"
+      - "--region=${_REGION}"
+      - "--platform=managed"
+      - "--quiet"
+      # - "--allow-unauthenticated"   # <- deja comentado si usas IAM
