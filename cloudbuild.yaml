@@ -5,9 +5,25 @@ substitutions:
   _IMAGE: "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/billing-api"
 
 steps:
+  # Build + push a Artifact Registry con 2 tags: SHORT_SHA y latest
   - name: "gcr.io/cloud-builders/docker"
     args: ["build","-t","${_IMAGE}:${SHORT_SHA}","-t","${_IMAGE}:latest","."]
 
+  # Espera a que :latest aparezca en Artifact Registry (evita 'not found' por propagación)
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        echo "Esperando a que la imagen :latest esté disponible..."
+        for i in {1..10}; do
+          gcloud artifacts docker images list "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}" \
+            --filter="package=billing-api AND tags:latest" \
+            --format="get(tags)" && break
+          sleep 3
+        done
+
+  # Deploy a Cloud Run usando la imagen :latest (mismo proyecto y región)
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: gcloud
     args:
@@ -17,6 +33,7 @@ steps:
       - "--image=${_IMAGE}:latest"
       - "--region=${_REGION}"
       - "--platform=managed"
+      - "--project=${PROJECT_ID}"
       - "--quiet"
       # - "--allow-unauthenticated"  # déjalo comentado si usas IAM
 
