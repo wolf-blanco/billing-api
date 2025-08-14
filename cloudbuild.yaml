@@ -5,25 +5,35 @@ substitutions:
   _IMAGE: "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/billing-api"
 
 steps:
-  # Build + push a Artifact Registry con 2 tags: SHORT_SHA y latest
+  # 0) Build con dos tags
   - name: "gcr.io/cloud-builders/docker"
     args: ["build","-t","${_IMAGE}:${SHORT_SHA}","-t","${_IMAGE}:latest","."]
 
-  # Espera a que :latest aparezca en Artifact Registry (evita 'not found' por propagación)
+  # 1) Autenticar docker contra Artifact Registry
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: gcloud
+    args: ["auth","configure-docker","${_REGION}-docker.pkg.dev","-q"]
+
+  # 2) Push explícito de ambas etiquetas
+  - name: "gcr.io/cloud-builders/docker"
+    args: ["push","${_IMAGE}:${SHORT_SHA}"]
+  - name: "gcr.io/cloud-builders/docker"
+    args: ["push","${_IMAGE}:latest"]
+
+  # 3) Esperar a que :latest esté visible en AR (evita 'not found' por propagación)
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: bash
     args:
       - -c
       - |
-        echo "Esperando a que la imagen :latest esté disponible..."
+        echo "Esperando a que :latest aparezca en Artifact Registry..."
         for i in {1..10}; do
-          gcloud artifacts docker images list "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}" \
-            --filter="package=billing-api AND tags:latest" \
-            --format="get(tags)" && break
+          gcloud artifacts docker images list "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/billing-api" \
+            --include-tags --format="value(Tags)" | grep -q latest && break
           sleep 3
         done
 
-  # Deploy a Cloud Run usando la imagen :latest (mismo proyecto y región)
+  # 4) Deploy a Cloud Run usando :latest
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: gcloud
     args:
@@ -37,6 +47,7 @@ steps:
       - "--quiet"
       # - "--allow-unauthenticated"  # déjalo comentado si usas IAM
 
+# (opcional) deja estas líneas; ya no dependemos de que 'images:' haga el push automático
 images:
   - "${_IMAGE}:${SHORT_SHA}"
   - "${_IMAGE}:latest"
