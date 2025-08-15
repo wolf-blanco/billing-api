@@ -117,11 +117,24 @@ async function getDolarCripto() {
   }
 
   // candidatos en orden
-  const candidates = [j?.cripto, j?.usdt, j?.usdc];
-  for (const c of candidates) {
-    const v = firstValidNumber(c);
-    if (v) return v;
-  }
+const usdtAsk =
+  firstValidNumber(j?.cripto?.usdt?.ask) ??
+  firstValidNumber(j?.cripto?.usdt?.price);
+if (usdtAsk) return usdtAsk;
+
+// Si no hay usdt ask, probá ccb/usdc y luego fallback genérico
+const ccbAsk = firstValidNumber(j?.cripto?.ccb?.ask);
+if (ccbAsk) return ccbAsk;
+const usdcAsk = firstValidNumber(j?.cripto?.usdc?.ask);
+if (usdcAsk) return usdcAsk;
+
+// Por último, búsqueda flexible (como ya tenías)
+const candidates = [j?.cripto, j?.usdt, j?.usdc];
+for (const c of candidates) {
+  const v = firstValidNumber(c);
+  if (v) return v;
+}
+
 
   console.error('CriptoYa sin tasa utilizable. JSON:', JSON.stringify(j).slice(0, 800));
   throw new Error('Tasa cripto inválida');
