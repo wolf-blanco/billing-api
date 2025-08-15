@@ -5,12 +5,11 @@
   "type": "commonjs",
   "engines": { "node": ">=20" },
   "dependencies": {
-    "@google-cloud/functions-framework": "^3.4.2",
     "express": "^4.19.2",
-    "mercadopago": "1.5.19"
+    "mercadopago": "1.5.17",
+    "@google-cloud/functions-framework": "^3.4.2"
   },
   "scripts": {
     "start": "functions-framework --target=api --port=${PORT:-8080}"
   }
 }
-
