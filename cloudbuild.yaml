@@ -5,22 +5,22 @@ substitutions:
   _IMAGE: "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/billing-api"
 
 steps:
-  # 0) Build con dos tags
+  # Build con dos tags
   - name: "gcr.io/cloud-builders/docker"
     args: ["build","-t","${_IMAGE}:${SHORT_SHA}","-t","${_IMAGE}:latest","."]
 
-  # 1) Autenticar docker contra Artifact Registry
+  # Autenticar docker contra Artifact Registry
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: gcloud
     args: ["auth","configure-docker","${_REGION}-docker.pkg.dev","-q"]
 
-  # 2) Push explícito de ambas etiquetas
+  # Push explícito de ambas etiquetas
   - name: "gcr.io/cloud-builders/docker"
     args: ["push","${_IMAGE}:${SHORT_SHA}"]
   - name: "gcr.io/cloud-builders/docker"
     args: ["push","${_IMAGE}:latest"]
 
-  # 3) Esperar a que :latest esté visible en AR (evita 'not found' por propagación)
+  # Espera a que :latest esté visible en Artifact Registry
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: bash
     args:
@@ -33,7 +33,7 @@ steps:
           sleep 3
         done
 
-  # 4) Deploy a Cloud Run usando :latest
+  # Deploy a Cloud Run usando :latest
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: gcloud
     args:
@@ -47,7 +47,6 @@ steps:
       - "--quiet"
       # - "--allow-unauthenticated"  # déjalo comentado si usas IAM
 
-# (opcional) deja estas líneas; ya no dependemos de que 'images:' haga el push automático
 images:
   - "${_IMAGE}:${SHORT_SHA}"
   - "${_IMAGE}:latest"
