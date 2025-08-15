@@ -1,10 +1,10 @@
 FROM node:22-slim
 WORKDIR /app
 
-# Copiamos package.json y (si existe) package-lock.json
+# Copiamos package.json y si existe package-lock
 COPY package.json package-lock.json* ./
 
-# Instala dependencias: usa npm ci si hay lock, si no npm install
+# Instala dependencias: usa npm ci si hay lock; si no, npm install
 RUN set -eux; \
     if [ -f package-lock.json ]; then \
       npm ci --omit=dev || npm ci --omit=dev --legacy-peer-deps; \
