@@ -23,16 +23,21 @@ function getEnv(name, def = undefined, required = false) {
   return v ?? def;
 }
 
+const RAW_MP_TOKEN = getEnv('MP_ACCESS_TOKEN', undefined, true);
+// quita \r \n y espacios de extremos
+const CLEAN_MP_TOKEN = RAW_MP_TOKEN.replace(/[\r\n]/g, '').trim();
+
 const CONFIG = {
   PRICE_USD: parseFloat(getEnv('BILLING_PRICE_USD', '49')),
   MARGIN_FX: parseFloat(getEnv('BILLING_MARGIN_FX', '0.02')),
   CURRENCY_ID: getEnv('BILLING_CURRENCY_ID', 'ARS'),
   EXPIRES_H: parseInt(getEnv('BILLING_EXPIRES_H', '48'), 10),
-  MP_ACCESS_TOKEN: getEnv('MP_ACCESS_TOKEN', undefined, true),
-  BEARER_TOKEN: getEnv('BILLING_BEARER_TOKEN', '')
+  MP_ACCESS_TOKEN: CLEAN_MP_TOKEN,
+  BEARER_TOKEN: (getEnv('BILLING_BEARER_TOKEN', '') || '').trim()
 };
 
 mercadopago.configure({ access_token: CONFIG.MP_ACCESS_TOKEN });
+
 
 // === Auth Bearer opcional ===
 function requireBearer(req, res, next) {
