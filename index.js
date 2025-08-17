@@ -81,11 +81,7 @@ async function createPreference({ title, quantity, unit_price, currency_id, exte
 
 // (Regla simple) Obtiene monto_local a emitir
 function resolveAmountLocalAtIssue(periodData) {
-  // Si ya tenés calculado y persistido, úsalo:
   if (periodData?.amount_local_at_issue != null) return periodData.amount_local_at_issue;
-  if (periodData?.local_estimated_eom != null) return periodData.local_estimated_eom;
-  // TODO: si querés calcular: 219 USD * tasa_del_día * 1.02
-  // Por ahora devolvemos 0 si no hay dato persistido.
   return 0;
 }
 
