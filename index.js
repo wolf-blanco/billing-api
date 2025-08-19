@@ -53,13 +53,6 @@ async function getPeriodDoc(customer_id, period) {
 }
 
 async function createPreference({ title, quantity, unit_price, currency_id, external_reference, expires_at_iso }) {
-  if (!HAS_MP) {
-    // DEMO fallback sin MP
-    return {
-      preference_id: "demo_pref",
-      payment_link: "https://www.mercadopago.com/checkout/v1/redirect?pref_id=demo_pref"
-    };
-  }
   const body = {
     items: [{ title, quantity, currency_id, unit_price }],
     external_reference,
@@ -72,12 +65,39 @@ async function createPreference({ title, quantity, unit_price, currency_id, exte
     expires: true,
     expiration_date_to: expires_at_iso
   };
-  const resp = await mercadopago.preferences.create(body);
-  return {
-    preference_id: resp.body.id,
-    payment_link: resp.body.init_point || resp.body.sandbox_init_point
-  };
+
+  if (!HAS_MP) {
+    return {
+      preference_id: "demo_pref",
+      payment_link: "https://www.mercadopago.com/checkout/v1/redirect?pref_id=demo_pref"
+    };
+  }
+
+  try {
+    // SDK v1
+    if (mercadopago.preferences?.create) {
+      const resp = await mercadopago.preferences.create(body);
+      return {
+        preference_id: resp.body.id,
+        payment_link: resp.body.init_point || resp.body.sandbox_init_point
+      };
+    }
+
+    // SDK v2
+    const { MercadoPagoConfig, Preference } = require("mercadopago");
+    const client = new MercadoPagoConfig({ accessToken: process.env.MP_ACCESS_TOKEN });
+    const pref = new Preference(client);
+    const resp = await pref.create({ body });
+    return {
+      preference_id: resp.id,
+      payment_link: resp.init_point || resp.sandbox_init_point
+    };
+  } catch (e) {
+    console.error("mp createPreference error:", e?.response?.data || e?.response?.body || e);
+    throw e;
+  }
 }
+
 
 // (Regla simple) Obtiene monto_local a emitir
 function resolveAmountLocalAtIssue(periodData) {
