@@ -144,7 +144,7 @@ app.get("/bff/billing/:period/overview", async (req, res) => {
     const p = perSnap.data() || {};
     const invoice = {
       status: p.status || "scheduled",
-      available_at: toIso(p.issued_at) || null,
+      available_at: toIso(p.available_at) || toIso(p.issued_at) || null,
       payment_link: p.payment_link || null,
       invoice_pdf_url: p.invoice_pdf_url || null,
       issued_at: toIso(p.issued_at) || null,
