@@ -34,13 +34,17 @@ function toIso(v) {
   } catch {}
   return null;
 }
+function toMPDatetime(iso, tz = process.env.MP_TZ_OFFSET || "-03:00") {
+  const s = new Date(iso).toISOString(); // 2025-08-21T01:54:59.000Z
+  return s.replace("Z", tz);             // 2025-08-21T01:54:59.000-03:00
+}
 
 function getAvailableAtDay30NineAM() {
   const now = new Date();
   return new Date(now.getFullYear(), now.getMonth(), 30, 9, 0, 0);
 }
 
-function addHours(iso, hours) {
+function (iso, hours) {
   const t = new Date(iso || Date.now());
   return new Date(t.getTime() + hours * 3600 * 1000).toISOString();
 }
@@ -237,7 +241,7 @@ app.post("/bff/billing/:period/generate", requireBillingToken, async (req, res) 
     }
 
     const amount_local = resolveAmountLocalAtIssue(data);
-    const expires_at = addHours(nowIso, 48);
+    const expires_at = (nowIso, 48);
 
     // preferencia MP (real o demo)
     const { preference_id, payment_link } = await createPreference({
@@ -266,6 +270,21 @@ app.post("/bff/billing/:period/generate", requireBillingToken, async (req, res) 
     res.status(500).json({ error: "internal_error" });
   }
 });
+const now = new Date();
+const expiresAt = addHours(now, 48); // ya tienes addHours
+const body = {
+  items: [{ title, quantity, currency_id, unit_price }],
+  external_reference,
+  auto_return: "approved",
+  back_urls: {
+    success: "https://eirybot.com/billing/success",
+    failure: "https://eirybot.com/billing/failure",
+    pending:  "https://eirybot.com/billing/pending"
+  },
+  expires: true,
+  expiration_date_from: toMPDatetime(now),
+  expiration_date_to:   toMPDatetime(expiresAt)
+};
 
 // ---------- POST /regenerate ----------
 app.post("/bff/billing/:period/regenerate", requireBillingToken, async (req, res) => {
@@ -279,7 +298,7 @@ app.post("/bff/billing/:period/regenerate", requireBillingToken, async (req, res
 
     const nowIso = new Date().toISOString();
     const amount_local = resolveAmountLocalAtIssue(data);
-    const expires_at = addHours(nowIso, 48);
+    const expires_at = (nowIso, 48);
 
     const { preference_id, payment_link } = await createPreference({
       title: `EiryBot ${period} — Plan básico startup (Mantenimiento) + Casillero de correo`,
