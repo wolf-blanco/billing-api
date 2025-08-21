@@ -1,27 +1,38 @@
 // index.js
-// -------------------------------------------------------------
+// -------------------------------------------------------------------
 // EiryBot Billing BFF (CommonJS + Functions Framework target=api)
+// Rutas:
 // - GET  /bff/billing/:period/overview
 // - POST /bff/billing/:period/generate
 // - POST /bff/billing/:period/regenerate
-// - Health: /healthz
-// -------------------------------------------------------------
+// - GET  /healthz
+// -------------------------------------------------------------------
 
 const admin = require("firebase-admin");
 const express = require("express");
-const mercadopago = require("mercadopago");
+
+// MercadoPago SDK: intentamos soportar v1 y v2
+let mpV1 = null;
+let mpV2 = null;
+try { mpV1 = require("mercadopago"); } catch (_) {}
+try { const pkg = require("mercadopago"); mpV2 = pkg.MercadoPagoConfig ? pkg : null; } catch (_) {}
 
 // ---------- Bootstrap ----------
 admin.initializeApp();
 const db = admin.firestore();
 
-// MP opcional (modo real si hay token, modo demo si no)
 const HAS_MP = !!process.env.MP_ACCESS_TOKEN;
-if (HAS_MP) {
-  mercadopago.configure({ access_token: process.env.MP_ACCESS_TOKEN });
-  console.log("[billing-api] MercadoPago SDK configured");
+const MP_TZ_OFFSET = process.env.MP_TZ_OFFSET || "-03:00"; // Argentina por defecto
+const MP_BACK_URL_BASE =
+  process.env.MP_BACK_URL_BASE || "https://eirybot.com"; // ajustable por env
+
+if (HAS_MP && mpV1 && typeof mpV1.configure === "function") {
+  mpV1.configure({ access_token: process.env.MP_ACCESS_TOKEN });
+  console.log("[billing-api] MercadoPago SDK v1 configured");
+} else if (HAS_MP && mpV2 && mpV2.MercadoPagoConfig) {
+  console.log("[billing-api] MercadoPago SDK v2 available");
 } else {
-  console.warn("[billing-api] MP_ACCESS_TOKEN not set → using DEMO links");
+  console.warn("[billing-api] MP_ACCESS_TOKEN not set or SDK missing → using DEMO links");
 }
 
 // ---------- Helpers ----------
@@ -30,22 +41,24 @@ function toIso(v) {
   try {
     if (typeof v.toDate === "function") return v.toDate().toISOString();
     if (v instanceof Date) return v.toISOString();
-    if (typeof v === "string") return v;
+    if (typeof v === "string") return new Date(v).toISOString();
   } catch {}
   return null;
 }
-function toMPDatetime(iso, tz = process.env.MP_TZ_OFFSET || "-03:00") {
-  const s = new Date(iso).toISOString(); // 2025-08-21T01:54:59.000Z
-  return s.replace("Z", tz);             // 2025-08-21T01:54:59.000-03:00
+
+function toMPDatetime(isoOrDate, tz = MP_TZ_OFFSET) {
+  const s = (isoOrDate instanceof Date ? isoOrDate : new Date(isoOrDate)).toISOString(); // 2025-08-21T01:54:59.000Z
+  return s.replace("Z", tz); // 2025-08-21T01:54:59.000-03:00
 }
 
 function getAvailableAtDay30NineAM() {
   const now = new Date();
+  // 9am del día 30 del mes actual (hora local de la instancia)
   return new Date(now.getFullYear(), now.getMonth(), 30, 9, 0, 0);
 }
 
-function (iso, hours) {
-  const t = new Date(iso || Date.now());
+function addHours(isoOrDate, hours) {
+  const t = (isoOrDate instanceof Date) ? isoOrDate : new Date(isoOrDate || Date.now());
   return new Date(t.getTime() + hours * 3600 * 1000).toISOString();
 }
 
@@ -56,54 +69,78 @@ async function getPeriodDoc(customer_id, period) {
   return { ref, snap, data: snap.exists ? (snap.data() || {}) : null };
 }
 
-async function createPreference({ title, quantity, unit_price, currency_id, external_reference, expires_at_iso }) {
-  const body = {
+// Unifica creación de preferencia MP (v1 / v2) o fallback demo
+async function createPreference({
+  title,
+  quantity,
+  unit_price,
+  currency_id,
+  external_reference,
+  expires_at_iso // ISO con 'Z'; se formatea a offset para MP
+}) {
+  // back_urls configurables por env; evitan errores con auto_return
+  const back_urls = {
+    success: `${MP_BACK_URL_BASE}/billing/success`,
+    failure: `${MP_BACK_URL_BASE}/billing/failure`,
+    pending: `${MP_BACK_URL_BASE}/billing/pending`
+  };
+
+  // Cuerpo común
+  const mpBody = {
     items: [{ title, quantity, currency_id, unit_price }],
     external_reference,
     auto_return: "approved",
-    back_urls: {
-      success: "https://eirybot.com/billing/success",
-      failure: "https://eirybot.com/billing/failure",
-      pending: "https://eirybot.com/billing/pending"
-    },
-    expires: true,
-    expiration_date_to: expires_at_iso
+    back_urls
   };
 
+  // Expiración (si se quiere enviar a MP)
+  if (expires_at_iso) {
+    const now = new Date();
+    mpBody.expires = true;
+    mpBody.expiration_date_from = toMPDatetime(now);
+    mpBody.expiration_date_to = toMPDatetime(expires_at_iso);
+  }
+
+  // Fallback demo si no hay token real
   if (!HAS_MP) {
     return {
       preference_id: "demo_pref",
-      payment_link: "https://www.mercadopago.com/checkout/v1/redirect?pref_id=demo_pref"
+      payment_link:
+        "https://www.mercadopago.com/checkout/v1/redirect?pref_id=demo_pref"
     };
   }
 
   try {
     // SDK v1
-    if (mercadopago.preferences?.create) {
-      const resp = await mercadopago.preferences.create(body);
+    if (mpV1 && mpV1.preferences && typeof mpV1.preferences.create === "function") {
+      const resp = await mpV1.preferences.create(mpBody);
+      const body = resp.body || resp;
       return {
-        preference_id: resp.body.id,
-        payment_link: resp.body.init_point || resp.body.sandbox_init_point
+        preference_id: body.id,
+        payment_link: body.init_point || body.sandbox_init_point
       };
     }
 
     // SDK v2
-    const { MercadoPagoConfig, Preference } = require("mercadopago");
-    const client = new MercadoPagoConfig({ accessToken: process.env.MP_ACCESS_TOKEN });
-    const pref = new Preference(client);
-    const resp = await pref.create({ body });
-    return {
-      preference_id: resp.id,
-      payment_link: resp.init_point || resp.sandbox_init_point
-    };
+    if (mpV2 && mpV2.MercadoPagoConfig) {
+      const { MercadoPagoConfig, Preference } = mpV2;
+      const client = new MercadoPagoConfig({ accessToken: process.env.MP_ACCESS_TOKEN });
+      const pref = new Preference(client);
+      const resp = await pref.create({ body: mpBody });
+      return {
+        preference_id: resp.id,
+        payment_link: resp.init_point || resp.sandbox_init_point
+      };
+    }
+
+    throw new Error("MercadoPago SDK not available");
   } catch (e) {
     console.error("mp createPreference error:", e?.response?.data || e?.response?.body || e);
     throw e;
   }
 }
 
-
-// (Regla simple) Obtiene monto_local a emitir
+// (Regla simple) monto a emitir
 function resolveAmountLocalAtIssue(periodData) {
   if (periodData?.amount_local_at_issue != null) return periodData.amount_local_at_issue;
   return 0;
@@ -116,13 +153,13 @@ app.use(express.json());
 // Health
 app.get("/healthz", (_req, res) => res.status(200).send("ok"));
 
-// Inyectar customer_id (ajustar según tu auth JWT)
+// Inyecta customer_id desde header (ajustar si usas JWT)
 app.use((req, _res, next) => {
   req.customer_id = String(req.header("X-Customer-Id") || "cus_001");
   next();
 });
 
-// Seguridad simple para POST
+// Seguridad simple para POST /generate y /regenerate
 function requireBillingToken(req, res, next) {
   const expected = process.env.BILLING_BEARER_TOKEN ? `Bearer ${process.env.BILLING_BEARER_TOKEN}` : null;
   const token = req.header("Authorization") || "";
@@ -147,13 +184,13 @@ app.get("/bff/billing/:period/overview", async (req, res) => {
     const perSnap = await db.collection("periods").doc(perId).get();
 
     if (!perSnap.exists) {
-      const availableAt = getAvailableAtDay30NineAM();
+      const availableAt = getAvailableAtDay30NineAM().toISOString();
       return res.json({
         customer: { display_name: customer.display_name, plan_id: customer.plan_id || "basic_startup" },
         period,
         invoice: {
           status: "scheduled",
-          available_at: availableAt.toISOString(),
+          available_at: availableAt,
           payment_link: null,
           invoice_pdf_url: null,
           issued_at: null,
@@ -176,7 +213,7 @@ app.get("/bff/billing/:period/overview", async (req, res) => {
       amount_local_at_issue: resolveAmountLocalAtIssue(p)
     };
 
-    // Último pago
+    // Último pago (opcional)
     const paySnap = await db
       .collection("payments")
       .where("customer_id", "==", customer_id)
@@ -241,28 +278,32 @@ app.post("/bff/billing/:period/generate", requireBillingToken, async (req, res) 
     }
 
     const amount_local = resolveAmountLocalAtIssue(data);
-    const expires_at = (nowIso, 48);
+    const expires_at = addHours(nowIso, 48);
 
     // preferencia MP (real o demo)
     const { preference_id, payment_link } = await createPreference({
       title: `EiryBot ${period} — Plan básico startup (Mantenimiento) + Casillero de correo`,
       quantity: 1,
-      currency_id: "ARS",                      // si cobrás en ARS
+      currency_id: "ARS", // ajusta si cobrás en otra moneda
       unit_price: Number((amount_local || 0).toFixed(2)),
       external_reference: `${customer_id}_${period}`,
       expires_at_iso: expires_at
     });
 
-    await ref.set({
-      customer_id, period,
-      status: "issued",
-      amount_local_at_issue: amount_local,
-      payment_link,
-      preference_id,
-      issued_at: nowIso,
-      expires_at,
-      updated_at: nowIso
-    }, { merge: true });
+    await ref.set(
+      {
+        customer_id,
+        period,
+        status: "issued",
+        amount_local_at_issue: amount_local,
+        payment_link,
+        preference_id,
+        issued_at: nowIso,
+        expires_at,
+        updated_at: nowIso
+      },
+      { merge: true }
+    );
 
     res.json({ ok: true, period, payment_link, preference_id, expires_at });
   } catch (e) {
@@ -270,21 +311,6 @@ app.post("/bff/billing/:period/generate", requireBillingToken, async (req, res) 
     res.status(500).json({ error: "internal_error" });
   }
 });
-const now = new Date();
-const expiresAt = addHours(now, 48); // ya tienes addHours
-const body = {
-  items: [{ title, quantity, currency_id, unit_price }],
-  external_reference,
-  auto_return: "approved",
-  back_urls: {
-    success: "https://eirybot.com/billing/success",
-    failure: "https://eirybot.com/billing/failure",
-    pending:  "https://eirybot.com/billing/pending"
-  },
-  expires: true,
-  expiration_date_from: toMPDatetime(now),
-  expiration_date_to:   toMPDatetime(expiresAt)
-};
 
 // ---------- POST /regenerate ----------
 app.post("/bff/billing/:period/regenerate", requireBillingToken, async (req, res) => {
@@ -298,7 +324,7 @@ app.post("/bff/billing/:period/regenerate", requireBillingToken, async (req, res
 
     const nowIso = new Date().toISOString();
     const amount_local = resolveAmountLocalAtIssue(data);
-    const expires_at = (nowIso, 48);
+    const expires_at = addHours(nowIso, 48);
 
     const { preference_id, payment_link } = await createPreference({
       title: `EiryBot ${period} — Plan básico startup (Mantenimiento) + Casillero de correo`,
@@ -309,15 +335,18 @@ app.post("/bff/billing/:period/regenerate", requireBillingToken, async (req, res
       expires_at_iso: expires_at
     });
 
-    await ref.set({
-      status: "issued",
-      amount_local_at_issue: amount_local,
-      payment_link,
-      preference_id,
-      last_regenerated_at: nowIso,
-      expires_at,
-      updated_at: nowIso
-    }, { merge: true });
+    await ref.set(
+      {
+        status: "issued",
+        amount_local_at_issue: amount_local,
+        payment_link,
+        preference_id,
+        last_regenerated_at: nowIso,
+        expires_at,
+        updated_at: nowIso
+      },
+      { merge: true }
+    );
 
     res.json({ ok: true, period, payment_link, preference_id, expires_at });
   } catch (e) {
