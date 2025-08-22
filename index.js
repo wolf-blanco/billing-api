@@ -2,6 +2,16 @@
 
 const admin = require("firebase-admin");
 const express = require("express");
+const cors = require("cors");
+const app = express();
+
+// ⚠️ Agregar CORS
+app.use(cors({
+  origin: "*", // Solo para desarrollo. Luego se puede poner el dominio real
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Customer-Id"],
+}));
+
 
 admin.initializeApp();
 const db = admin.firestore();
