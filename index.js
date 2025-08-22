@@ -171,8 +171,6 @@ app.post("/bff/billing/:period/generate", requireBillingToken, async (req, res) 
         period,
         status: "issued",
         amount_local_at_issue: amount_local,
-        payment_link: null,
-        preference_id: null,
         issued_at: nowIso,
         expires_at,
         updated_at: nowIso,
@@ -204,8 +202,6 @@ app.post("/bff/billing/:period/regenerate", requireBillingToken, async (req, res
       {
         status: "issued",
         amount_local_at_issue: amount_local,
-        payment_link: null,
-        preference_id: null,
         last_regenerated_at: nowIso,
         expires_at,
         updated_at: nowIso,
