@@ -1,88 +1,86 @@
-// index.js
 const express = require("express");
-const admin = require("firebase-admin");
 const cors = require("cors");
+const admin = require("firebase-admin");
+const functions = require("@google-cloud/functions-framework");
 
-// === Inicializa Firebase Admin ===
+// Inicializar Firebase Admin
 admin.initializeApp();
 const db = admin.firestore();
 
-// === Express App ===
+// Inicializar Express
 const app = express();
-const PORT = process.env.PORT || 8080;
+app.use(cors({ origin: true }));
+app.use(express.json());
 
-// === Middleware ===
-app.use(cors()); // Permite llamadas desde el frontend (incluso en localhost)
-app.use(express.json()); // Para leer JSON en el body
+// Middleware de autenticación por token
+app.use((req, res, next) => {
+  const auth = req.headers.authorization;
+  const token = process.env.BILLING_BEARER_TOKEN;
 
-// === Middleware de autenticación por Bearer Token ===
-const BILLING_BEARER_TOKEN = process.env.BILLING_BEARER_TOKEN || "";
-const authMiddleware = (req, res, next) => {
-  const authHeader = req.headers["authorization"];
-  if (authHeader === BILLING_BEARER_TOKEN) {
-    return next();
+  if (!auth || !auth.startsWith("Bearer ") || auth.split(" ")[1] !== token) {
+    return res.status(401).json({ error: "unauthorized" });
   }
-  return res.status(401).json({ error: "unauthorized" });
-};
 
-// === Ruta de salud para ver si está vivo el servicio ===
-app.get("/health", (req, res) => {
-  res.status(200).send("OK");
+  next();
 });
 
-// === Ruta para obtener overview del período de facturación ===
-app.get("/bff/billing/:period/overview", authMiddleware, async (req, res) => {
-  const customerId = req.headers["x-customer-id"];
-  const { period } = req.params;
-  if (!customerId) return res.status(400).json({ error: "customer_id required" });
-
-  const docId = `${customerId}_${period}`;
+// Ruta: Obtener resumen de facturación del cliente
+app.get("/bff/billing/:periodo/overview", async (req, res) => {
   try {
-    const ref = db.collection("periods").doc(docId);
-    const doc = await ref.get();
-    if (!doc.exists) {
-      return res.status(404).json({ error: "period not found" });
-    }
-    return res.status(200).json(doc.data());
+    const customerId = req.headers["x-customer-id"];
+    const periodo = req.params.periodo;
+
+    const snapshot = await db.collection("facturas")
+      .where("cliente_id", "==", customerId)
+      .where("periodo", "==", periodo)
+      .get();
+
+    if (snapshot.empty) return res.status(404).json({ error: "Factura no encontrada" });
+
+    const factura = snapshot.docs[0].data();
+    res.json(factura);
   } catch (err) {
-    console.error("Error al obtener periodo:", err);
-    return res.status(500).json({ error: "internal error" });
+    console.error("Error overview:", err);
+    res.status(500).json({ error: "internal_error" });
   }
 });
 
-// === Ruta para generar factura (sin link de pago) ===
-app.post("/bff/billing/:period/generate", authMiddleware, async (req, res) => {
-  const customerId = req.headers["x-customer-id"];
-  const { period } = req.params;
-  if (!customerId) return res.status(400).json({ error: "customer_id required" });
-
-  const docId = `${customerId}_${period}`;
-  const ref = db.collection("periods").doc(docId);
-
+// Ruta: Generar nueva factura para el cliente
+app.post("/bff/billing/:periodo/generate", async (req, res) => {
   try {
-    await ref.set(
-      {
-        customer_id: customerId,
-        period,
-        status: "issued",
-        created_at: new Date().toISOString(),
-        amount_local_at_issue: req.body.amount || 0
-      },
-      { merge: true }
-    );
+    const periodo = req.params.periodo;
+    const customerId = req.headers["x-customer-id"];
 
-    return res.status(200).json({
-      ok: true,
-      service: "billing",
-      periodo: period
+    if (!customerId) return res.status(400).json({ error: "Falta customer-id" });
+
+    const clienteRef = db.collection("clientes").doc(customerId);
+    const clienteSnap = await clienteRef.get();
+
+    if (!clienteSnap.exists) return res.status(404).json({ error: "Cliente no encontrado" });
+
+    const cliente = clienteSnap.data();
+
+    const nuevaFactura = {
+      cliente_id: customerId,
+      periodo,
+      estado: "pendiente",
+      fecha_emision: new Date().toISOString(),
+      monto_total: cliente.plan_mensual || 0,
+      moneda: "USD",
+      observaciones: "",
+    };
+
+    const facturaRef = await db.collection("facturas").add(nuevaFactura);
+
+    res.status(201).json({
+      id: facturaRef.id,
+      ...nuevaFactura,
     });
   } catch (err) {
     console.error("Error al generar factura:", err);
-    return res.status(500).json({ error: "internal error" });
+    res.status(500).json({ error: "internal_error" });
   }
 });
 
-// === Inicia el servidor ===
-app.listen(PORT, () => {
-  console.log(`Servidor de billing activo en http://localhost:${PORT}`);
-});
+// Exportar para Cloud Run (functions-framework)
+functions.http("api", app);
