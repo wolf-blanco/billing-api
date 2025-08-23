@@ -1,84 +1,88 @@
-"use strict";
-
+// index.js
 const express = require("express");
-const cors = require("cors");
 const admin = require("firebase-admin");
+const cors = require("cors");
 
+// === Inicializa Firebase Admin ===
 admin.initializeApp();
 const db = admin.firestore();
 
+// === Express App ===
 const app = express();
+const PORT = process.env.PORT || 8080;
 
-// ✅ Middleware CORS para permitir acceso desde el frontend
-app.use(cors({
-  origin: "*", // Solo durante desarrollo. Luego reemplaza por tu dominio real.
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Customer-Id"]
-}));
+// === Middleware ===
+app.use(cors()); // Permite llamadas desde el frontend (incluso en localhost)
+app.use(express.json()); // Para leer JSON en el body
 
-// ✅ Middleware para parsear JSON
-app.use(express.json());
-
-// ✅ Middleware para validar token de autorización (Bearer)
-const validateAuth = (req, res, next) => {
-  const token = req.headers["authorization"];
-  if (!token || token !== process.env.BILLING_BEARER_TOKEN) {
-    return res.status(401).json({ error: "unauthorized" });
+// === Middleware de autenticación por Bearer Token ===
+const BILLING_BEARER_TOKEN = process.env.BILLING_BEARER_TOKEN || "";
+const authMiddleware = (req, res, next) => {
+  const authHeader = req.headers["authorization"];
+  if (authHeader === BILLING_BEARER_TOKEN) {
+    return next();
   }
-  next();
+  return res.status(401).json({ error: "unauthorized" });
 };
 
-// ✅ Ruta para generar factura
-app.post("/bff/billing/:period/generate", validateAuth, async (req, res) => {
-  const period = req.params.period;
-  const customerId = req.headers["x-customer-id"];
-  if (!customerId) return res.status(400).json({ error: "missing customer id" });
-
-  try {
-    const ref = db.collection("facturas");
-    const docRef = await ref.add({
-      customer_id: customerId,
-      period,
-      status: "pendiente",
-      created_at: new Date().toISOString()
-    });
-
-    res.json({ ok: true, id: docRef.id });
-  } catch (error) {
-    console.error("Error al generar factura:", error);
-    res.status(500).json({ error: "internal error" });
-  }
+// === Ruta de salud para ver si está vivo el servicio ===
+app.get("/health", (req, res) => {
+  res.status(200).send("OK");
 });
 
-// ✅ Ruta para consultar overview de facturación
-app.get("/bff/billing/:period/overview", validateAuth, async (req, res) => {
-  const period = req.params.period;
+// === Ruta para obtener overview del período de facturación ===
+app.get("/bff/billing/:period/overview", authMiddleware, async (req, res) => {
   const customerId = req.headers["x-customer-id"];
-  if (!customerId) return res.status(400).json({ error: "missing customer id" });
+  const { period } = req.params;
+  if (!customerId) return res.status(400).json({ error: "customer_id required" });
 
+  const docId = `${customerId}_${period}`;
   try {
-    const snapshot = await db.collection("facturas")
-      .where("customer_id", "==", customerId)
-      .where("period", "==", period)
-      .limit(1)
-      .get();
-
-    if (snapshot.empty) {
-      return res.status(404).json({ error: "no factura found" });
+    const ref = db.collection("periods").doc(docId);
+    const doc = await ref.get();
+    if (!doc.exists) {
+      return res.status(404).json({ error: "period not found" });
     }
-
-    const doc = snapshot.docs[0];
-    res.json({ id: doc.id, ...doc.data() });
-  } catch (error) {
-    console.error("Error al obtener overview:", error);
-    res.status(500).json({ error: "internal error" });
+    return res.status(200).json(doc.data());
+  } catch (err) {
+    console.error("Error al obtener periodo:", err);
+    return res.status(500).json({ error: "internal error" });
   }
 });
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
-  console.log(`Servidor escuchando en el puerto ${PORT}`);
+
+// === Ruta para generar factura (sin link de pago) ===
+app.post("/bff/billing/:period/generate", authMiddleware, async (req, res) => {
+  const customerId = req.headers["x-customer-id"];
+  const { period } = req.params;
+  if (!customerId) return res.status(400).json({ error: "customer_id required" });
+
+  const docId = `${customerId}_${period}`;
+  const ref = db.collection("periods").doc(docId);
+
+  try {
+    await ref.set(
+      {
+        customer_id: customerId,
+        period,
+        status: "issued",
+        created_at: new Date().toISOString(),
+        amount_local_at_issue: req.body.amount || 0
+      },
+      { merge: true }
+    );
+
+    return res.status(200).json({
+      ok: true,
+      service: "billing",
+      periodo: period
+    });
+  } catch (err) {
+    console.error("Error al generar factura:", err);
+    return res.status(500).json({ error: "internal error" });
+  }
 });
-// ✅ Exportar la función principal
-exports.api = functions
-  .region("us-central1")
-  .https.onRequest(app);
+
+// === Inicia el servidor ===
+app.listen(PORT, () => {
+  console.log(`Servidor de billing activo en http://localhost:${PORT}`);
+});
