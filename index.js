@@ -74,7 +74,10 @@ app.get("/bff/billing/:period/overview", validateAuth, async (req, res) => {
     res.status(500).json({ error: "internal error" });
   }
 });
-
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, () => {
+  console.log(`Servidor escuchando en el puerto ${PORT}`);
+});
 // ✅ Exportar la función principal
 exports.api = functions
   .region("us-central1")
