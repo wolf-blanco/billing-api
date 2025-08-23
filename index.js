@@ -1,86 +1,150 @@
+// index.js
 const express = require("express");
 const cors = require("cors");
-const admin = require("firebase-admin");
+const bodyParser = require("body-parser");
 const functions = require("@google-cloud/functions-framework");
+const admin = require("firebase-admin");
 
-// Inicializar Firebase Admin
-admin.initializeApp();
-const db = admin.firestore();
-
-// Inicializar Express
 const app = express();
-app.use(cors({ origin: true }));
-app.use(express.json());
+app.use(cors());
+app.use(bodyParser.json());
 
-// Middleware de autenticación por token
-app.use((req, res, next) => {
-  const auth = req.headers.authorization;
-  const token = process.env.BILLING_BEARER_TOKEN;
+// Inicializar Firebase Admin si no está iniciado
+if (!admin.apps.length) {
+  admin.initializeApp();
+}
 
-  if (!auth || !auth.startsWith("Bearer ") || auth.split(" ")[1] !== token) {
-    return res.status(401).json({ error: "unauthorized" });
+const db = admin.firestore();
+const collectionFacturas = db.collection("facturas");
+const collectionClientes = db.collection("clientes");
+
+// Ruta base para Cloud Run
+functions.http("api", app);
+
+// Ruta: Overview
+app.get("/bff/billing/:periodo/overview", async (req, res) => {
+  const { periodo } = req.params;
+  const clienteId = req.headers["cliente-id"];
+
+  if (!clienteId) {
+    return res.status(400).json({ error: "Falta cliente-id en headers" });
   }
 
-  next();
-});
-
-// Ruta: Obtener resumen de facturación del cliente
-app.get("/bff/billing/:periodo/overview", async (req, res) => {
   try {
-    const customerId = req.headers["x-customer-id"];
-    const periodo = req.params.periodo;
-
-    const snapshot = await db.collection("facturas")
-      .where("cliente_id", "==", customerId)
+    const snapshot = await collectionFacturas
+      .where("cliente_id", "==", clienteId)
       .where("periodo", "==", periodo)
+      .limit(1)
       .get();
 
-    if (snapshot.empty) return res.status(404).json({ error: "Factura no encontrada" });
+    if (snapshot.empty) {
+      return res.status(200).json({
+        estado: "no_generada",
+        periodo,
+        total: 15,
+        fecha: `${periodo}-31`,
+        moneda: "USD",
+      });
+    }
 
-    const factura = snapshot.docs[0].data();
-    res.json(factura);
-  } catch (err) {
-    console.error("Error overview:", err);
-    res.status(500).json({ error: "internal_error" });
+    const doc = snapshot.docs[0].data();
+
+    return res.status(200).json({
+      estado: doc.estado,
+      periodo: doc.periodo,
+      total: doc.total,
+      fecha: doc.fecha,
+      moneda: doc.moneda || "USD",
+      enlace: doc.enlace || null,
+    });
+  } catch (error) {
+    console.error("Error al consultar factura:", error);
+    return res.status(500).json({ error: "Error interno del servidor" });
   }
 });
 
-// Ruta: Generar nueva factura para el cliente
+// Ruta: Generar factura
 app.post("/bff/billing/:periodo/generate", async (req, res) => {
+  const { periodo } = req.params;
+  const clienteId = req.headers["cliente-id"];
+
+  if (!clienteId) {
+    return res.status(400).json({ error: "Falta cliente-id en headers" });
+  }
+
   try {
-    const periodo = req.params.periodo;
-    const customerId = req.headers["x-customer-id"];
+    const clienteDoc = await collectionClientes.doc(clienteId).get();
+    if (!clienteDoc.exists) {
+      return res.status(404).json({ error: "Cliente no encontrado" });
+    }
 
-    if (!customerId) return res.status(400).json({ error: "Falta customer-id" });
+    const cliente = clienteDoc.data();
 
-    const clienteRef = db.collection("clientes").doc(customerId);
-    const clienteSnap = await clienteRef.get();
-
-    if (!clienteSnap.exists) return res.status(404).json({ error: "Cliente no encontrado" });
-
-    const cliente = clienteSnap.data();
-
-    const nuevaFactura = {
-      cliente_id: customerId,
+    const factura = {
+      cliente_id: clienteId,
       periodo,
       estado: "pendiente",
-      fecha_emision: new Date().toISOString(),
-      monto_total: cliente.plan_mensual || 0,
+      total: 15,
+      fecha: `${periodo}-31`,
       moneda: "USD",
-      observaciones: "",
+      cliente_nombre: cliente.nombre || "",
+      cliente_email: cliente.email || "",
+      creada: new Date().toISOString(),
     };
 
-    const facturaRef = await db.collection("facturas").add(nuevaFactura);
+    const docRef = await collectionFacturas.add(factura);
 
-    res.status(201).json({
-      id: facturaRef.id,
-      ...nuevaFactura,
-    });
-  } catch (err) {
-    console.error("Error al generar factura:", err);
-    res.status(500).json({ error: "internal_error" });
+    return res.status(200).json({ id: docRef.id, ...factura });
+  } catch (error) {
+    console.error("Error al generar factura:", error);
+    return res.status(500).json({ error: "Error al generar factura" });
   }
 });
 
-// Exportar para Cloud Run (functions-framework)
-functions.http("api", app);
+// Ruta: Regenerar factura
+app.post("/bff/billing/:periodo/regenerate", async (req, res) => {
+  const { periodo } = req.params;
+  const clienteId = req.headers["cliente-id"];
+
+  if (!clienteId) {
+    return res.status(400).json({ error: "Falta cliente-id en headers" });
+  }
+
+  try {
+    const query = await collectionFacturas
+      .where("cliente_id", "==", clienteId)
+      .where("periodo", "==", periodo)
+      .limit(1)
+      .get();
+
+    if (!query.empty) {
+      await query.docs[0].ref.delete();
+    }
+
+    const clienteDoc = await collectionClientes.doc(clienteId).get();
+    if (!clienteDoc.exists) {
+      return res.status(404).json({ error: "Cliente no encontrado" });
+    }
+
+    const cliente = clienteDoc.data();
+
+    const nuevaFactura = {
+      cliente_id: clienteId,
+      periodo,
+      estado: "pendiente",
+      total: 15,
+      fecha: `${periodo}-31`,
+      moneda: "USD",
+      cliente_nombre: cliente.nombre || "",
+      cliente_email: cliente.email || "",
+      creada: new Date().toISOString(),
+    };
+
+    const docRef = await collectionFacturas.add(nuevaFactura);
+
+    return res.status(200).json({ id: docRef.id, ...nuevaFactura });
+  } catch (error) {
+    console.error("Error al regenerar factura:", error);
+    return res.status(500).json({ error: "Error al regenerar factura" });
+  }
+});
